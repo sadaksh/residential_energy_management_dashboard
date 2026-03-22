@@ -400,6 +400,64 @@ fig_enduse_donut = px.pie(
 )
 c2.plotly_chart(fig_enduse_donut, use_container_width=True)
 
+# 4. Date vs hour heatmap - channel selector
+st.subheader("Date vs Hour Heatmap")
+
+if "Channel_Clean" not in long_df.columns:
+    long_df["Channel_Clean"] = long_df["Channel"].apply(lambda x: clean_channel_name(x, apartment_name))
+
+available_channels = sorted(long_df["Channel_Clean"].dropna().unique().tolist())
+
+heatmap_metric = st.radio(
+    "Heatmap metric",
+    ["Energy (kWh)", "Average Power (kW)"],
+    horizontal=True
+)
+
+channel_option = st.selectbox(
+    "Select channel",
+    options=["Show all channels"] + available_channels,
+    index=0
+)
+
+def build_channel_heatmap(ch_df, channel_name, metric):
+    if metric == "Energy (kWh)":
+        heatmap_df = (
+            ch_df.groupby(["Date", "Hour"], as_index=False)["Energy_kWh"]
+            .sum()
+            .pivot(index="Date", columns="Hour", values="Energy_kWh")
+            .fillna(0)
+        )
+        color_label = "kWh"
+        title = f"Date vs Hour Heatmap - {channel_name} (Energy)"
+    else:
+        heatmap_df = (
+            ch_df.groupby(["Date", "Hour"], as_index=False)["kW"]
+            .mean()
+            .pivot(index="Date", columns="Hour", values="kW")
+            .fillna(0)
+        )
+        color_label = "kW"
+        title = f"Date vs Hour Heatmap - {channel_name} (Average Power)"
+
+    fig = px.imshow(
+        heatmap_df,
+        aspect="auto",
+        labels=dict(x="Hour", y="Date", color=color_label),
+        title=title,
+        color_continuous_scale="YlOrRd",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+if channel_option == "Show all channels":
+    for ch in available_channels:
+        with st.expander(f"Heatmap - {ch}", expanded=False):
+            ch_df = long_df[long_df["Channel_Clean"] == ch].copy()
+            build_channel_heatmap(ch_df, ch, heatmap_metric)
+else:
+    ch_df = long_df[long_df["Channel_Clean"] == channel_option].copy()
+    build_channel_heatmap(ch_df, channel_option, heatmap_metric)
+    
 st.subheader("Average Hourly Load Profile")
 fig_hourly = px.line(
     hourly_profile,
