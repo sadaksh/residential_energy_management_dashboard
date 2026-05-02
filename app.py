@@ -1,4 +1,6 @@
+import io
 import re
+import zipfile
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -7,7 +9,7 @@ import plotly.express as px
 import streamlit as st
 
 
-st.set_page_config(page_title="Apartment Operation Schedule", layout="wide")
+st.set_page_config(page_title="Apartment Vampire Load & Operation Schedule", layout="wide")
 
 
 # -----------------------------
@@ -52,42 +54,90 @@ def clean_channel_name(channel: str, apartment_name: str = "") -> str:
     return ch
 
 
-def default_channel_threshold(channel: str) -> float:
+def default_active_threshold(channel: str) -> float:
+    """Threshold above which the appliance is treated as active/operating."""
     c = str(channel).strip().lower()
 
     def has_pattern(patterns):
         return any(re.search(p, c) for p in patterns)
 
-    # Specific first
     if has_pattern([r"\bwashing machine\b", r"\bwasher\b", r"\blaundry\b"]):
         return 0.05
-
     if has_pattern([r"\bgeyser\b", r"\bwater heater\b", r"\bheater\b"]):
         return 0.30
-
     if has_pattern([r"\blight\b", r"\blights\b", r"\blighting\b", r"\blamp\b"]):
         return 0.01
-
     if has_pattern([r"\bfridge\b", r"\brefrigerator\b", r"\bfreezer\b"]):
         return 0.03
-
     if has_pattern([r"\boven\b", r"\bmicrowave\b", r"\binduction\b", r"\bcooking\b", r"\bkitchen\b"]):
         return 0.10
-
     if has_pattern([r"\bfan\b", r"\bfans\b"]):
         return 0.03
-
     if has_pattern([r"\bac\b", r"\bair conditioner\b", r"\bcooling\b"]):
         return 0.15
-
     if has_pattern([
         r"\bplug\b", r"\bpower\b", r"\bspare\b", r"\bsocket\b", r"\bmisc\b",
         r"\btv\b", r"\bcomputer\b", r"\bstudy plug\b", r"\bunknown\b",
-        r"\bwifi\b", r"\bpoint\b"
+        r"\bwifi\b", r"\brouter\b", r"\bpoint\b", r"\bcharger\b"
     ]):
         return 0.02
-
     return 0.02
+
+
+def default_standby_threshold(channel: str) -> float:
+    """Threshold below which the channel is treated as OFF / noise.
+    Values between standby threshold and active threshold are treated as vampire/standby.
+    """
+    c = str(channel).strip().lower()
+
+    def has_pattern(patterns):
+        return any(re.search(p, c) for p in patterns)
+
+    if has_pattern([r"\blight\b", r"\blights\b", r"\blighting\b", r"\blamp\b"]):
+        return 0.001
+    if has_pattern([r"\bfridge\b", r"\brefrigerator\b", r"\bfreezer\b"]):
+        return 0.005
+    if has_pattern([r"\bgeyser\b", r"\bwater heater\b", r"\bheater\b"]):
+        return 0.020
+    if has_pattern([r"\bac\b", r"\bair conditioner\b", r"\bcooling\b"]):
+        return 0.010
+    if has_pattern([r"\bfan\b", r"\bfans\b"]):
+        return 0.003
+    if has_pattern([r"\bwashing machine\b", r"\bwasher\b", r"\blaundry\b"]):
+        return 0.005
+    if has_pattern([r"\boven\b", r"\bmicrowave\b", r"\binduction\b", r"\bcooking\b", r"\bkitchen\b"]):
+        return 0.005
+    if has_pattern([
+        r"\bplug\b", r"\bpower\b", r"\bspare\b", r"\bsocket\b", r"\bmisc\b",
+        r"\btv\b", r"\bcomputer\b", r"\bstudy plug\b", r"\bunknown\b",
+        r"\bwifi\b", r"\brouter\b", r"\bpoint\b", r"\bcharger\b"
+    ]):
+        return 0.003
+    return 0.003
+
+
+def classify_end_use(channel: str) -> str:
+    c = str(channel).strip().lower()
+
+    patterns = [
+        ("Cooling / AC", [r"\bac\b", r"\bair conditioner\b", r"\bcooling\b"]),
+        ("Fan", [r"\bfan\b", r"\bfans\b"]),
+        ("Lighting", [r"\blight\b", r"\blights\b", r"\blighting\b", r"\blamp\b"]),
+        ("Refrigeration", [r"\bfridge\b", r"\brefrigerator\b", r"\bfreezer\b"]),
+        ("Water Heating", [r"\bgeyser\b", r"\bwater heater\b", r"\bheater\b"]),
+        ("Laundry", [r"\bwashing machine\b", r"\bwasher\b", r"\blaundry\b"]),
+        ("Kitchen Appliance", [r"\boven\b", r"\bmicrowave\b", r"\binduction\b", r"\bcooking\b", r"\bkitchen\b"]),
+        ("Plug / Misc", [
+            r"\bplug\b", r"\bpower\b", r"\bspare\b", r"\bsocket\b", r"\bmisc\b",
+            r"\btv\b", r"\bcomputer\b", r"\bstudy plug\b", r"\bunknown\b",
+            r"\bwifi\b", r"\brouter\b", r"\bpoint\b", r"\bcharger\b"
+        ]),
+    ]
+
+    for category, pats in patterns:
+        if any(re.search(p, c) for p in pats):
+            return category
+    return "Other / Unclassified"
 
 
 def preprocess_raw(df: pd.DataFrame) -> Tuple[pd.DataFrame, str, List[str]]:
@@ -99,16 +149,21 @@ def preprocess_raw(df: pd.DataFrame) -> Tuple[pd.DataFrame, str, List[str]]:
 
     non_ts_cols = [c for c in df.columns if c != ts_col]
 
-    # Convert possible numeric columns
     for c in non_ts_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce")
 
     numeric_cols = [c for c in non_ts_cols if pd.api.types.is_numeric_dtype(df[c]) and df[c].notna().any()]
 
-    # Convert all numeric values to absolute
+    # Corrected data-cleaning rule: readings are in kW and negative values are treated as positive load.
     df[numeric_cols] = df[numeric_cols].abs()
 
     return df, ts_col, numeric_cols
+
+
+def safe_divide(numerator: float, denominator: float) -> float:
+    if denominator in [0, None] or pd.isna(denominator):
+        return 0.0
+    return float(numerator) / float(denominator)
 
 
 def build_operation_long_table(
@@ -116,7 +171,8 @@ def build_operation_long_table(
     ts_col: str,
     load_cols: List[str],
     interval_minutes: float,
-    channel_threshold_map: Dict[str, float],
+    standby_threshold_map: Dict[str, float],
+    active_threshold_map: Dict[str, float],
     apartment_name: str = "",
 ) -> pd.DataFrame:
     long_df = df[[ts_col] + load_cols].melt(
@@ -128,22 +184,56 @@ def build_operation_long_table(
 
     long_df["kW"] = pd.to_numeric(long_df["kW"], errors="coerce").fillna(0).abs()
     long_df["Channel_Clean"] = long_df["Channel"].apply(lambda x: clean_channel_name(x, apartment_name))
+    long_df["End_Use_Category"] = long_df["Channel_Clean"].apply(classify_end_use)
     long_df["Date"] = long_df[ts_col].dt.date
     long_df["Hour"] = long_df[ts_col].dt.hour
     long_df["DayType"] = np.where(long_df[ts_col].dt.weekday < 5, "Weekday", "Weekend")
-    long_df["Runtime_Threshold_kW"] = long_df["Channel"].map(channel_threshold_map).fillna(0.02)
 
-    # 1 if active, 0 if inactive
-    long_df["Runtime_Flag"] = (long_df["kW"] > long_df["Runtime_Threshold_kW"]).astype(int)
+    long_df["Standby_Threshold_kW"] = long_df["Channel"].map(standby_threshold_map).fillna(0.003)
+    long_df["Active_Threshold_kW"] = long_df["Channel"].map(active_threshold_map).fillna(0.02)
 
-    # Active minutes in each interval
-    long_df["Active_Minutes"] = long_df["Runtime_Flag"] * interval_minutes
+    # Ensure active threshold is always higher than standby threshold.
+    long_df["Active_Threshold_kW"] = np.maximum(
+        long_df["Active_Threshold_kW"],
+        long_df["Standby_Threshold_kW"] + 0.001,
+    )
+
+    energy_factor = interval_minutes / 60.0
+    long_df["Interval_Minutes"] = interval_minutes
+    long_df["Energy_Factor_h"] = energy_factor
+
+    # Since readings are in kW, energy per interval is kW × interval hours.
+    # For 5-minute data, this is kW × (5/60) = kW × (1/12).
+    long_df["Interval_kWh"] = long_df["kW"] * energy_factor
+
+    long_df["Off_Flag"] = (long_df["kW"] <= long_df["Standby_Threshold_kW"]).astype(int)
+    long_df["Vampire_Flag"] = (
+        (long_df["kW"] > long_df["Standby_Threshold_kW"])
+        & (long_df["kW"] <= long_df["Active_Threshold_kW"])
+    ).astype(int)
+    long_df["Active_Flag"] = (long_df["kW"] > long_df["Active_Threshold_kW"]).astype(int)
+
+    long_df["State"] = np.select(
+        [long_df["Active_Flag"] == 1, long_df["Vampire_Flag"] == 1],
+        ["ACTIVE", "VAMPIRE / STANDBY"],
+        default="OFF",
+    )
+
+    long_df["Off_Minutes"] = long_df["Off_Flag"] * interval_minutes
+    long_df["Vampire_Minutes"] = long_df["Vampire_Flag"] * interval_minutes
+    long_df["Active_Minutes"] = long_df["Active_Flag"] * interval_minutes
+
+    long_df["Off_kWh"] = long_df["Interval_kWh"] * long_df["Off_Flag"]
+    long_df["Vampire_kWh"] = long_df["Interval_kWh"] * long_df["Vampire_Flag"]
+    long_df["Active_kWh"] = long_df["Interval_kWh"] * long_df["Active_Flag"]
+
+    channel_peak = long_df.groupby("Channel_Clean")["kW"].transform("max").replace(0, np.nan)
+    long_df["Load_Fraction"] = (long_df["kW"] / channel_peak).fillna(0).clip(0, 1)
 
     return long_df
 
 
 def build_schedule_table(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
-    """Returns Channel x Hour matrix."""
     out = (
         df.groupby(["Channel_Clean", "Hour"], as_index=False)[value_col]
         .mean()
@@ -154,11 +244,11 @@ def build_schedule_table(df: pd.DataFrame, value_col: str) -> pd.DataFrame:
         if h not in out.columns:
             out[h] = 0
     out = out[sorted(out.columns)]
+    out.columns = [f"{h:02d}:00" for h in out.columns]
     return out
 
 
 def build_daily_schedule_table(df: pd.DataFrame, channel_clean: str, value_col: str) -> pd.DataFrame:
-    """Returns Date x Hour matrix for one channel."""
     out = (
         df[df["Channel_Clean"] == channel_clean]
         .groupby(["Date", "Hour"], as_index=False)[value_col]
@@ -170,20 +260,120 @@ def build_daily_schedule_table(df: pd.DataFrame, channel_clean: str, value_col: 
         if h not in out.columns:
             out[h] = 0
     out = out[sorted(out.columns)]
+    out.columns = [f"{h:02d}:00" for h in out.columns]
     return out
 
 
-def to_csv_bytes(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=True).encode("utf-8")
+def to_csv_bytes(df: pd.DataFrame, index: bool = True) -> bytes:
+    return df.to_csv(index=index).encode("utf-8")
+
+
+def calculate_equivalent_days(ts: pd.Series, interval_minutes: float) -> float:
+    ts_unique = pd.to_datetime(ts, errors="coerce").dropna().drop_duplicates()
+    if ts_unique.empty:
+        return 0.0
+    return len(ts_unique) * interval_minutes / 1440.0
+
+
+def build_equipment_summary(long_df: pd.DataFrame, equivalent_days: float) -> pd.DataFrame:
+    rows = []
+    for channel_clean, g in long_df.groupby("Channel_Clean", dropna=False):
+        total_kwh = g["Interval_kWh"].sum()
+        vampire_kwh = g["Vampire_kWh"].sum()
+        active_kwh = g["Active_kWh"].sum()
+        active_hours = g["Active_Minutes"].sum() / 60.0
+        vampire_hours = g["Vampire_Minutes"].sum() / 60.0
+
+        active_values = g.loc[g["Active_Flag"] == 1, "kW"]
+        vampire_values = g.loc[g["Vampire_Flag"] == 1, "kW"]
+
+        row = {
+            "Channel_Clean": channel_clean,
+            "End_Use_Category": g["End_Use_Category"].iloc[0],
+            "Peak_kW": g["kW"].max(),
+            "Average_kW": g["kW"].mean(),
+            "Average_Active_kW": active_values.mean() if not active_values.empty else 0.0,
+            "Average_Vampire_kW": vampire_values.mean() if not vampire_values.empty else 0.0,
+            "Standby_Threshold_kW": g["Standby_Threshold_kW"].iloc[0],
+            "Active_Threshold_kW": g["Active_Threshold_kW"].iloc[0],
+            "Total_kWh": total_kwh,
+            "Active_kWh": active_kwh,
+            "Vampire_kWh": vampire_kwh,
+            "Vampire_Share_%": safe_divide(vampire_kwh, total_kwh) * 100,
+            "Active_Hours_Total": active_hours,
+            "Vampire_Hours_Total": vampire_hours,
+            "Active_Hours_per_Day": safe_divide(active_hours, equivalent_days),
+            "Vampire_Hours_per_Day": safe_divide(vampire_hours, equivalent_days),
+            "Vampire_kWh_per_Day": safe_divide(vampire_kwh, equivalent_days),
+            "Vampire_kWh_per_Month": safe_divide(vampire_kwh, equivalent_days) * 30,
+            "Vampire_kWh_per_Year": safe_divide(vampire_kwh, equivalent_days) * 365,
+        }
+        rows.append(row)
+
+    summary = pd.DataFrame(rows)
+    if not summary.empty:
+        summary = summary.sort_values("Vampire_kWh_per_Day", ascending=False).reset_index(drop=True)
+    return summary
+
+
+def build_category_summary(equipment_summary: pd.DataFrame) -> pd.DataFrame:
+    if equipment_summary.empty:
+        return equipment_summary
+    cols = [
+        "Total_kWh",
+        "Active_kWh",
+        "Vampire_kWh",
+        "Active_Hours_Total",
+        "Vampire_Hours_Total",
+        "Vampire_kWh_per_Day",
+        "Vampire_kWh_per_Month",
+        "Vampire_kWh_per_Year",
+    ]
+    out = equipment_summary.groupby("End_Use_Category", as_index=False)[cols].sum()
+    out["Vampire_Share_%"] = out.apply(lambda r: safe_divide(r["Vampire_kWh"], r["Total_kWh"]) * 100, axis=1)
+    out = out.sort_values("Vampire_kWh_per_Day", ascending=False).reset_index(drop=True)
+    return out
+
+
+def build_total_load_timeseries(long_df: pd.DataFrame, ts_col: str) -> pd.DataFrame:
+    out = (
+        long_df.groupby(ts_col, as_index=False)
+        .agg(
+            Total_kW=("kW", "sum"),
+            Total_kWh=("Interval_kWh", "sum"),
+            Vampire_kWh=("Vampire_kWh", "sum"),
+            Active_kWh=("Active_kWh", "sum"),
+        )
+    )
+    out["Hour"] = out[ts_col].dt.hour
+    out["Date"] = out[ts_col].dt.date
+    out["DayType"] = np.where(out[ts_col].dt.weekday < 5, "Weekday", "Weekend")
+    return out
+
+
+def create_zip_download(files: Dict[str, pd.DataFrame]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for filename, data in files.items():
+            zf.writestr(filename, data.to_csv(index=True))
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def format_df_numbers(df: pd.DataFrame, decimals: int = 3) -> pd.DataFrame:
+    out = df.copy()
+    numeric_cols = out.select_dtypes(include=[np.number]).columns
+    out[numeric_cols] = out[numeric_cols].round(decimals)
+    return out
 
 
 # -----------------------------
 # App
 # -----------------------------
-st.title("Operation Schedule Dashboard")
+st.title("Apartment Vampire Load & Operation Schedule Dashboard")
 st.caption(
-    "Operation schedules are based on channel-wise standby thresholds. "
-    "All numeric values are converted to absolute values before analysis."
+    "Input readings are treated as kW. Energy is calculated as kWh = kW × interval_minutes / 60. "
+    "For 5-minute data, this equals kW × 1/12. Negative readings are converted to absolute values before analysis."
 )
 
 uploaded_file = st.file_uploader("Upload apartment CSV / Excel", type=["csv", "xlsx", "xls"])
@@ -199,6 +389,7 @@ if not numeric_cols:
     st.error("No numeric load columns found.")
     st.stop()
 
+# Default phase-total columns to exclude to avoid double counting.
 default_phase_cols = [c for c in numeric_cols if "phase" in c.lower()]
 
 with st.sidebar:
@@ -212,7 +403,28 @@ with st.sidebar:
         min_value=1.0,
         value=float(detected_interval),
         step=1.0,
+        help="Energy is calculated as kW × interval_minutes / 60. For 5-minute data, this is kW × 1/12.",
     )
+
+    energy_factor = interval_minutes / 60.0
+    st.info(f"Energy conversion factor: {energy_factor:.6f} h per reading")
+
+    tariff_rs_per_kwh = st.number_input(
+        "Electricity tariff for savings estimate (₹/kWh)",
+        min_value=0.0,
+        value=8.0,
+        step=0.5,
+    )
+
+    grid_ef_kgco2_per_kwh = st.number_input(
+        "Grid emission factor (kgCO₂/kWh)",
+        min_value=0.0,
+        value=0.70,
+        step=0.05,
+    )
+
+    night_start_hour = st.number_input("Night baseload start hour", min_value=0, max_value=23, value=0, step=1)
+    night_end_hour = st.number_input("Night baseload end hour", min_value=1, max_value=24, value=5, step=1)
 
     phase_cols = st.multiselect(
         "Phase total columns to exclude",
@@ -221,7 +433,7 @@ with st.sidebar:
     )
 
     load_cols = st.multiselect(
-        "Channels for operation schedule",
+        "Channels for analysis",
         options=[c for c in numeric_cols if c not in phase_cols],
         default=[c for c in numeric_cols if c not in phase_cols],
     )
@@ -231,21 +443,45 @@ with st.sidebar:
         st.stop()
 
     st.subheader("Channel Thresholds (kW)")
-    channel_threshold_map: Dict[str, float] = {}
+    standby_threshold_map: Dict[str, float] = {}
+    active_threshold_map: Dict[str, float] = {}
 
-    with st.expander("Edit thresholds", expanded=False):
+    with st.expander("Edit standby and active thresholds", expanded=False):
+        st.caption(
+            "OFF: kW ≤ standby threshold | VAMPIRE/STANDBY: standby threshold < kW ≤ active threshold | ACTIVE: kW > active threshold"
+        )
         for i, ch in enumerate(load_cols):
-            channel_threshold_map[ch] = st.number_input(
-                label=ch,
-                min_value=0.0,
-                value=float(default_channel_threshold(ch)),
-                step=0.01,
-                key=f"thr_{i}",
-            )
+            st.markdown(f"**{clean_channel_name(ch, apartment_name)}**")
+            c1, c2 = st.columns(2)
+            with c1:
+                standby_threshold_map[ch] = st.number_input(
+                    label="Standby threshold (kW)",
+                    min_value=0.0,
+                    value=float(default_standby_threshold(ch)),
+                    step=0.001,
+                    format="%.3f",
+                    key=f"standby_thr_{i}",
+                )
+            with c2:
+                active_threshold_map[ch] = st.number_input(
+                    label="Active threshold (kW)",
+                    min_value=0.0,
+                    value=float(default_active_threshold(ch)),
+                    step=0.01,
+                    format="%.3f",
+                    key=f"active_thr_{i}",
+                )
 
     schedule_metric = st.radio(
         "Schedule metric",
-        ["Operation Probability", "Average Active Minutes per Hour"],
+        [
+            "Active Operation Probability",
+            "Equivalent Active Minutes per Hour",
+            "Vampire / Standby Probability",
+            "Equivalent Vampire Minutes per Hour",
+            "Average kW",
+            "Load Fraction",
+        ],
         horizontal=False,
     )
 
@@ -255,132 +491,375 @@ long_df = build_operation_long_table(
     ts_col=ts_col,
     load_cols=load_cols,
     interval_minutes=interval_minutes,
-    channel_threshold_map=channel_threshold_map,
+    standby_threshold_map=standby_threshold_map,
+    active_threshold_map=active_threshold_map,
     apartment_name=apartment_name,
 )
 
-# Metric selection
-if schedule_metric == "Operation Probability":
-    long_df["Schedule_Value"] = long_df["Runtime_Flag"]
-    color_label = "Probability"
-    zmax_week = 1.0
-    zmax_day = 1.0
-else:
-    # Mean active minutes within the hour across observations
-    # Since each interval contributes interval_minutes if active
-    # averaging Active_Minutes across intervals gives average active minutes per interval,
-    # so for schedule-style visualization we convert to equivalent share of hour:
-    # Runtime_Flag mean * 60
-    long_df["Schedule_Value"] = long_df["Runtime_Flag"] * 60.0
-    color_label = "Active Minutes"
-    zmax_week = 60.0
-    zmax_day = 60.0
+equivalent_days = calculate_equivalent_days(df[ts_col], interval_minutes)
+total_ts = build_total_load_timeseries(long_df, ts_col)
+equipment_summary = build_equipment_summary(long_df, equivalent_days)
+category_summary = build_category_summary(equipment_summary)
 
-# Weekday / weekend tables
+# Metric selection for schedules
+if schedule_metric == "Active Operation Probability":
+    long_df["Schedule_Value"] = long_df["Active_Flag"]
+    color_label = "Active Probability"
+    zmin, zmax = 0, 1
+elif schedule_metric == "Equivalent Active Minutes per Hour":
+    long_df["Schedule_Value"] = long_df["Active_Flag"] * 60.0
+    color_label = "Active Minutes per Hour"
+    zmin, zmax = 0, 60
+elif schedule_metric == "Vampire / Standby Probability":
+    long_df["Schedule_Value"] = long_df["Vampire_Flag"]
+    color_label = "Vampire Probability"
+    zmin, zmax = 0, 1
+elif schedule_metric == "Equivalent Vampire Minutes per Hour":
+    long_df["Schedule_Value"] = long_df["Vampire_Flag"] * 60.0
+    color_label = "Vampire Minutes per Hour"
+    zmin, zmax = 0, 60
+elif schedule_metric == "Average kW":
+    long_df["Schedule_Value"] = long_df["kW"]
+    color_label = "Average kW"
+    zmin, zmax = 0, None
+else:
+    long_df["Schedule_Value"] = long_df["Load_Fraction"]
+    color_label = "Load Fraction"
+    zmin, zmax = 0, 1
+
 weekday_df = long_df[long_df["DayType"] == "Weekday"].copy()
 weekend_df = long_df[long_df["DayType"] == "Weekend"].copy()
 
 weekday_schedule = build_schedule_table(weekday_df, "Schedule_Value")
 weekend_schedule = build_schedule_table(weekend_df, "Schedule_Value")
 
-# Daily selected channel
+# Simulation-specific schedule tables
+weekday_active_probability = build_schedule_table(weekday_df.assign(Sim_Value=weekday_df["Active_Flag"]), "Sim_Value")
+weekend_active_probability = build_schedule_table(weekend_df.assign(Sim_Value=weekend_df["Active_Flag"]), "Sim_Value")
+weekday_vampire_probability = build_schedule_table(weekday_df.assign(Sim_Value=weekday_df["Vampire_Flag"]), "Sim_Value")
+weekend_vampire_probability = build_schedule_table(weekend_df.assign(Sim_Value=weekend_df["Vampire_Flag"]), "Sim_Value")
+weekday_load_fraction = build_schedule_table(weekday_df.assign(Sim_Value=weekday_df["Load_Fraction"]), "Sim_Value")
+weekend_load_fraction = build_schedule_table(weekend_df.assign(Sim_Value=weekend_df["Load_Fraction"]), "Sim_Value")
+weekday_avg_kw = build_schedule_table(weekday_df.assign(Sim_Value=weekday_df["kW"]), "Sim_Value")
+weekend_avg_kw = build_schedule_table(weekend_df.assign(Sim_Value=weekend_df["kW"]), "Sim_Value")
+
 all_channels_clean = sorted(long_df["Channel_Clean"].dropna().unique().tolist())
 selected_channel_clean = st.selectbox("Select channel for daily operation schedule", options=all_channels_clean)
 daily_schedule = build_daily_schedule_table(long_df, selected_channel_clean, "Schedule_Value")
 
-# Summary
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Apartment", apartment_name)
-c2.metric("Start", str(df[ts_col].min()))
-c3.metric("End", str(df[ts_col].max()))
-c4.metric("Channels", len(load_cols))
+# -----------------------------
+# KPI Summary
+# -----------------------------
+total_energy_kwh = long_df["Interval_kWh"].sum()
+total_vampire_kwh = long_df["Vampire_kWh"].sum()
+total_active_kwh = long_df["Active_kWh"].sum()
+vampire_share = safe_divide(total_vampire_kwh, total_energy_kwh) * 100
+vampire_kwh_per_day = safe_divide(total_vampire_kwh, equivalent_days)
+vampire_kwh_per_month = vampire_kwh_per_day * 30
+vampire_kwh_per_year = vampire_kwh_per_day * 365
+avoidable_cost_month = vampire_kwh_per_month * tariff_rs_per_kwh
+avoidable_emissions_year = vampire_kwh_per_year * grid_ef_kgco2_per_kwh
+
+if not total_ts.empty:
+    avg_apartment_kw = total_ts["Total_kW"].mean()
+    peak_apartment_kw = total_ts["Total_kW"].max()
+    night_ts = total_ts[(total_ts["Hour"] >= night_start_hour) & (total_ts["Hour"] < night_end_hour)]
+    night_baseload_kw = night_ts["Total_kW"].mean() if not night_ts.empty else 0.0
+else:
+    avg_apartment_kw = 0.0
+    peak_apartment_kw = 0.0
+    night_baseload_kw = 0.0
+
+top_vampire_channel = "NA"
+if not equipment_summary.empty and equipment_summary["Vampire_kWh_per_Day"].max() > 0:
+    top_vampire_channel = equipment_summary.iloc[0]["Channel_Clean"]
 
 st.markdown("---")
+st.subheader("1) Apartment-Level KPI Summary")
 
-# Applied thresholds
-st.subheader("Applied Channel Thresholds")
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Apartment", apartment_name)
+k2.metric("Monitoring Start", str(df[ts_col].min()))
+k3.metric("Monitoring End", str(df[ts_col].max()))
+k4.metric("Equivalent Days", f"{equivalent_days:.2f}")
+
+k5, k6, k7, k8 = st.columns(4)
+k5.metric("Total Energy", f"{total_energy_kwh:.2f} kWh")
+k6.metric("Vampire Energy", f"{total_vampire_kwh:.2f} kWh")
+k7.metric("Vampire Share", f"{vampire_share:.1f}%")
+k8.metric("Top Vampire Channel", str(top_vampire_channel))
+
+k9, k10, k11, k12 = st.columns(4)
+k9.metric("Avg Apartment Load", f"{avg_apartment_kw:.3f} kW")
+k10.metric("Peak Apartment Load", f"{peak_apartment_kw:.3f} kW")
+k11.metric("Night Baseload", f"{night_baseload_kw:.3f} kW")
+k12.metric("Channels Analysed", len(load_cols))
+
+k13, k14, k15, k16 = st.columns(4)
+k13.metric("Vampire kWh/day", f"{vampire_kwh_per_day:.2f}")
+k14.metric("Vampire kWh/month", f"{vampire_kwh_per_month:.2f}")
+k15.metric("Avoidable Cost/month", f"₹{avoidable_cost_month:,.0f}")
+k16.metric("Avoidable CO₂/year", f"{avoidable_emissions_year:.0f} kgCO₂")
+
+st.caption(
+    "Energy calculation note: all input readings are kW. Each interval energy is calculated as "
+    "kW × interval_minutes / 60. If interval = 5 minutes, the multiplier is 1/12."
+)
+
+# -----------------------------
+# Thresholds and Classification
+# -----------------------------
+st.markdown("---")
+st.subheader("2) Applied Thresholds and End-Use Classification")
 threshold_df = pd.DataFrame({
-    "Channel": list(channel_threshold_map.keys()),
-    "Channel_Clean": [clean_channel_name(ch, apartment_name) for ch in channel_threshold_map.keys()],
-    "Runtime Threshold (kW)": list(channel_threshold_map.values()),
+    "Channel": list(active_threshold_map.keys()),
+    "Channel_Clean": [clean_channel_name(ch, apartment_name) for ch in active_threshold_map.keys()],
+    "End_Use_Category": [classify_end_use(clean_channel_name(ch, apartment_name)) for ch in active_threshold_map.keys()],
+    "Standby Threshold (kW)": [standby_threshold_map[ch] for ch in active_threshold_map.keys()],
+    "Active Threshold (kW)": [active_threshold_map[ch] for ch in active_threshold_map.keys()],
 })
-st.dataframe(threshold_df, use_container_width=True, hide_index=True)
+st.dataframe(format_df_numbers(threshold_df), use_container_width=True, hide_index=True)
 
+# -----------------------------
+# Vampire Load Summary
+# -----------------------------
 st.markdown("---")
+st.subheader("3) Vampire Load KPI Tables")
 
-# Weekday schedule
-st.subheader("1) Weekday Operation Schedule")
-st.caption("Rows = channels, columns = hour of day, values based on channel-wise thresholded operation.")
-fig_weekday = px.imshow(
-    weekday_schedule,
-    aspect="auto",
-    color_continuous_scale="YlOrRd",
-    labels={"x": "Hour", "y": "Channel", "color": color_label},
-    zmin=0,
-    zmax=zmax_week,
-    title="Weekday Operation Schedule",
+t1, t2 = st.tabs(["Equipment Summary", "End-Use Category Summary"])
+
+with t1:
+    st.dataframe(format_df_numbers(equipment_summary), use_container_width=True, hide_index=True)
+
+    if not equipment_summary.empty:
+        fig_top_vampire = px.bar(
+            equipment_summary.head(15),
+            x="Channel_Clean",
+            y="Vampire_kWh_per_Day",
+            hover_data=["End_Use_Category", "Average_Vampire_kW", "Vampire_Hours_per_Day", "Vampire_Share_%"],
+            title="Top Vampire-Load Channels: kWh/day",
+            labels={"Channel_Clean": "Channel", "Vampire_kWh_per_Day": "Vampire kWh/day"},
+        )
+        st.plotly_chart(fig_top_vampire, use_container_width=True)
+
+with t2:
+    st.dataframe(format_df_numbers(category_summary), use_container_width=True, hide_index=True)
+
+    if not category_summary.empty:
+        fig_category = px.bar(
+            category_summary,
+            x="End_Use_Category",
+            y="Vampire_kWh_per_Day",
+            hover_data=["Total_kWh", "Vampire_Share_%"],
+            title="Vampire Load by End-Use Category",
+            labels={"End_Use_Category": "End-Use Category", "Vampire_kWh_per_Day": "Vampire kWh/day"},
+        )
+        st.plotly_chart(fig_category, use_container_width=True)
+
+# Hourly vampire profile
+hourly_vampire = (
+    long_df.groupby(["DayType", "Hour"], as_index=False)
+    .agg(
+        Vampire_kWh=("Vampire_kWh", "sum"),
+        Total_kWh=("Interval_kWh", "sum"),
+        Average_Vampire_kW=("kW", lambda s: np.nan),
+    )
 )
-st.plotly_chart(fig_weekday, use_container_width=True)
-
-# Weekend schedule
-st.subheader("2) Weekend Operation Schedule")
-fig_weekend = px.imshow(
-    weekend_schedule,
-    aspect="auto",
-    color_continuous_scale="YlOrRd",
-    labels={"x": "Hour", "y": "Channel", "color": color_label},
-    zmin=0,
-    zmax=zmax_week,
-    title="Weekend Operation Schedule",
+# Recalculate average vampire kW using only vampire-state rows.
+hourly_vampire_kw = (
+    long_df[long_df["Vampire_Flag"] == 1]
+    .groupby(["DayType", "Hour"], as_index=False)["kW"]
+    .mean()
+    .rename(columns={"kW": "Average_Vampire_kW"})
 )
-st.plotly_chart(fig_weekend, use_container_width=True)
+hourly_vampire = hourly_vampire.drop(columns=["Average_Vampire_kW"]).merge(
+    hourly_vampire_kw,
+    on=["DayType", "Hour"],
+    how="left",
+)
+hourly_vampire["Average_Vampire_kW"] = hourly_vampire["Average_Vampire_kW"].fillna(0)
 
-# Daily schedule
-st.subheader("3) Daily Operation Schedule")
+fig_hourly_vampire = px.line(
+    hourly_vampire,
+    x="Hour",
+    y="Average_Vampire_kW",
+    color="DayType",
+    markers=True,
+    title="Hourly Vampire / Standby Load Profile",
+    labels={"Hour": "Hour of Day", "Average_Vampire_kW": "Average Vampire kW"},
+)
+st.plotly_chart(fig_hourly_vampire, use_container_width=True)
+
+# -----------------------------
+# Operation Schedules
+# -----------------------------
+st.markdown("---")
+st.subheader("4) Weekday / Weekend Operation Schedules")
+st.caption("Rows = equipment channels, columns = hour of day. Values depend on the selected schedule metric.")
+
+c1, c2 = st.columns(2)
+with c1:
+    fig_weekday = px.imshow(
+        weekday_schedule,
+        aspect="auto",
+        color_continuous_scale="YlOrRd",
+        labels={"x": "Hour", "y": "Channel", "color": color_label},
+        zmin=zmin,
+        zmax=zmax,
+        title=f"Weekday Schedule - {schedule_metric}",
+    )
+    st.plotly_chart(fig_weekday, use_container_width=True)
+
+with c2:
+    fig_weekend = px.imshow(
+        weekend_schedule,
+        aspect="auto",
+        color_continuous_scale="YlOrRd",
+        labels={"x": "Hour", "y": "Channel", "color": color_label},
+        zmin=zmin,
+        zmax=zmax,
+        title=f"Weekend Schedule - {schedule_metric}",
+    )
+    st.plotly_chart(fig_weekend, use_container_width=True)
+
+st.subheader("5) Daily Operation Schedule")
 st.caption("Daily schedule is shown for the selected channel.")
 fig_daily = px.imshow(
     daily_schedule,
     aspect="auto",
     color_continuous_scale="YlOrRd",
     labels={"x": "Hour", "y": "Date", "color": color_label},
-    zmin=0,
-    zmax=zmax_day,
-    title=f"Daily Operation Schedule - {selected_channel_clean}",
+    zmin=zmin,
+    zmax=zmax,
+    title=f"Daily Schedule - {selected_channel_clean} - {schedule_metric}",
 )
 st.plotly_chart(fig_daily, use_container_width=True)
 
+# -----------------------------
+# Simulation Export Tables
+# -----------------------------
 st.markdown("---")
+st.subheader("6) Simulation-Ready Schedule Exports")
+st.caption(
+    "Use active probability and load fraction schedules for equipment operation modelling. "
+    "Use vampire probability and average vampire kW for standby/base plug-load modelling."
+)
 
-# Optional detailed tables
-with st.expander("Show processed operation table"):
-    st.dataframe(
-        long_df[
-            [ts_col, "Channel", "Channel_Clean", "kW", "Runtime_Threshold_kW", "Runtime_Flag", "Active_Minutes", "Date", "Hour", "DayType"]
-        ],
-        use_container_width=True,
+sim_tabs = st.tabs([
+    "Weekday Active Probability",
+    "Weekend Active Probability",
+    "Weekday Load Fraction",
+    "Weekend Load Fraction",
+    "Weekday Average kW",
+    "Weekend Average kW",
+    "Weekday Vampire Probability",
+    "Weekend Vampire Probability",
+])
+
+with sim_tabs[0]:
+    st.dataframe(format_df_numbers(weekday_active_probability), use_container_width=True)
+with sim_tabs[1]:
+    st.dataframe(format_df_numbers(weekend_active_probability), use_container_width=True)
+with sim_tabs[2]:
+    st.dataframe(format_df_numbers(weekday_load_fraction), use_container_width=True)
+with sim_tabs[3]:
+    st.dataframe(format_df_numbers(weekend_load_fraction), use_container_width=True)
+with sim_tabs[4]:
+    st.dataframe(format_df_numbers(weekday_avg_kw), use_container_width=True)
+with sim_tabs[5]:
+    st.dataframe(format_df_numbers(weekend_avg_kw), use_container_width=True)
+with sim_tabs[6]:
+    st.dataframe(format_df_numbers(weekday_vampire_probability), use_container_width=True)
+with sim_tabs[7]:
+    st.dataframe(format_df_numbers(weekend_vampire_probability), use_container_width=True)
+
+# -----------------------------
+# Processed Data and Downloads
+# -----------------------------
+st.markdown("---")
+st.subheader("7) Download Tables")
+
+processed_cols = [
+    ts_col,
+    "Channel",
+    "Channel_Clean",
+    "End_Use_Category",
+    "kW",
+    "Interval_Minutes",
+    "Energy_Factor_h",
+    "Interval_kWh",
+    "Standby_Threshold_kW",
+    "Active_Threshold_kW",
+    "State",
+    "Off_Flag",
+    "Vampire_Flag",
+    "Active_Flag",
+    "Off_Minutes",
+    "Vampire_Minutes",
+    "Active_Minutes",
+    "Off_kWh",
+    "Vampire_kWh",
+    "Active_kWh",
+    "Load_Fraction",
+    "Date",
+    "Hour",
+    "DayType",
+]
+
+with st.expander("Show processed long-format table"):
+    st.dataframe(format_df_numbers(long_df[processed_cols]), use_container_width=True)
+
+apartment_slug = apartment_name.replace(" ", "_").replace("/", "_")
+
+export_files = {
+    f"{apartment_slug}_equipment_summary.csv": equipment_summary,
+    f"{apartment_slug}_category_summary.csv": category_summary,
+    f"{apartment_slug}_processed_operation_table.csv": long_df[processed_cols],
+    f"{apartment_slug}_weekday_active_probability.csv": weekday_active_probability,
+    f"{apartment_slug}_weekend_active_probability.csv": weekend_active_probability,
+    f"{apartment_slug}_weekday_load_fraction.csv": weekday_load_fraction,
+    f"{apartment_slug}_weekend_load_fraction.csv": weekend_load_fraction,
+    f"{apartment_slug}_weekday_average_kw.csv": weekday_avg_kw,
+    f"{apartment_slug}_weekend_average_kw.csv": weekend_avg_kw,
+    f"{apartment_slug}_weekday_vampire_probability.csv": weekday_vampire_probability,
+    f"{apartment_slug}_weekend_vampire_probability.csv": weekend_vampire_probability,
+    f"{apartment_slug}_{selected_channel_clean.replace(' ', '_')}_daily_schedule.csv": daily_schedule,
+}
+
+zipped_exports = create_zip_download(export_files)
+
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.download_button(
+        "Download all simulation tables ZIP",
+        data=zipped_exports,
+        file_name=f"{apartment_slug}_vampire_load_and_simulation_exports.zip",
+        mime="application/zip",
+    )
+with c2:
+    st.download_button(
+        "Download equipment summary CSV",
+        data=to_csv_bytes(equipment_summary, index=False),
+        file_name=f"{apartment_slug}_equipment_summary.csv",
+        mime="text/csv",
+    )
+with c3:
+    st.download_button(
+        "Download processed operation table CSV",
+        data=to_csv_bytes(long_df[processed_cols], index=False),
+        file_name=f"{apartment_slug}_processed_operation_table.csv",
+        mime="text/csv",
     )
 
-# Downloads
-st.subheader("Download Schedule Tables")
-d1, d2, d3 = st.columns(3)
-
-d1.download_button(
-    "Download weekday schedule CSV",
-    data=to_csv_bytes(weekday_schedule),
-    file_name=f"{apartment_name.replace(' ', '_')}_weekday_operation_schedule.csv",
-    mime="text/csv",
-)
-
-d2.download_button(
-    "Download weekend schedule CSV",
-    data=to_csv_bytes(weekend_schedule),
-    file_name=f"{apartment_name.replace(' ', '_')}_weekend_operation_schedule.csv",
-    mime="text/csv",
-)
-
-d3.download_button(
-    "Download daily schedule CSV",
-    data=to_csv_bytes(daily_schedule),
-    file_name=f"{apartment_name.replace(' ', '_')}_{selected_channel_clean.replace(' ', '_')}_daily_operation_schedule.csv",
-    mime="text/csv",
+st.markdown("---")
+st.subheader("Interpretation Notes")
+st.markdown(
+    """
+- **Input unit:** All channel readings are treated as **kW**.
+- **Energy conversion:** `kWh = kW × interval_minutes / 60`. For 5-minute readings, use `kW × 1/12`.
+- **OFF state:** Reading is below or equal to the standby/noise threshold.
+- **VAMPIRE / STANDBY state:** Reading is above the standby threshold but below or equal to the active threshold.
+- **ACTIVE state:** Reading is above the active threshold.
+- **Simulation use:** Use `active probability` or `load fraction` schedules for equipment operation. Use `vampire probability`, `average vampire kW`, and `vampire kWh/day` for standby/base-load modelling.
+"""
 )
