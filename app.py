@@ -618,7 +618,7 @@ threshold_df = pd.DataFrame({
     "Standby Threshold (kW)": [standby_threshold_map[ch] for ch in active_threshold_map.keys()],
     "Active Threshold (kW)": [active_threshold_map[ch] for ch in active_threshold_map.keys()],
 })
-st.dataframe(format_df_numbers(threshold_df), width='stretch', hide_index=True)
+st.dataframe(format_df_numbers(threshold_df), use_container_width=True, hide_index=True)
 
 # -----------------------------
 # Vampire Load Summary
@@ -629,7 +629,7 @@ st.subheader("3) Vampire Load KPI Tables")
 t1, t2 = st.tabs(["Equipment Summary", "End-Use Category Summary"])
 
 with t1:
-    st.dataframe(format_df_numbers(equipment_summary), width='stretch', hide_index=True)
+    st.dataframe(format_df_numbers(equipment_summary), use_container_width=True, hide_index=True)
 
     if not equipment_summary.empty:
         fig_top_vampire = px.bar(
@@ -640,10 +640,10 @@ with t1:
             title="Top Vampire-Load Channels: kWh/day",
             labels={"Channel_Clean": "Channel", "Vampire_kWh_per_Day": "Vampire kWh/day"},
         )
-        st.plotly_chart(fig_top_vampire, width='stretch')
+        st.plotly_chart(fig_top_vampire, use_container_width=True)
 
 with t2:
-    st.dataframe(format_df_numbers(category_summary), width='stretch', hide_index=True)
+    st.dataframe(format_df_numbers(category_summary), use_container_width=True, hide_index=True)
 
     if not category_summary.empty:
         fig_category = px.bar(
@@ -654,7 +654,7 @@ with t2:
             title="Vampire Load by End-Use Category",
             labels={"End_Use_Category": "End-Use Category", "Vampire_kWh_per_Day": "Vampire kWh/day"},
         )
-        st.plotly_chart(fig_category, width='stretch')
+        st.plotly_chart(fig_category, use_container_width=True)
 
 # Hourly vampire profile
 hourly_vampire = (
@@ -688,7 +688,7 @@ fig_hourly_vampire = px.line(
     title="Hourly Vampire / Standby Load Profile",
     labels={"Hour": "Hour of Day", "Average_Vampire_kW": "Average Vampire kW"},
 )
-st.plotly_chart(fig_hourly_vampire, width='stretch')
+st.plotly_chart(fig_hourly_vampire, use_container_width=True)
 
 # -----------------------------
 # Operation Schedules
@@ -708,7 +708,7 @@ with c1:
         zmax=zmax,
         title=f"Weekday Schedule - {schedule_metric}",
     )
-    st.plotly_chart(fig_weekday, width='stretch')
+    st.plotly_chart(fig_weekday, use_container_width=True)
 
 with c2:
     fig_weekend = px.imshow(
@@ -720,7 +720,7 @@ with c2:
         zmax=zmax,
         title=f"Weekend Schedule - {schedule_metric}",
     )
-    st.plotly_chart(fig_weekend, width='stretch')
+    st.plotly_chart(fig_weekend, use_container_width=True)
 
 st.subheader("5) Daily Operation Schedule")
 st.caption("Daily schedule is shown for the selected channel.")
@@ -733,7 +733,7 @@ fig_daily = px.imshow(
     zmax=zmax,
     title=f"Daily Schedule - {selected_channel_clean} - {schedule_metric}",
 )
-st.plotly_chart(fig_daily, width='stretch')
+st.plotly_chart(fig_daily, use_container_width=True)
 
 # -----------------------------
 # Simulation Export Tables
@@ -757,33 +757,64 @@ sim_tabs = st.tabs([
 ])
 
 with sim_tabs[0]:
-    st.dataframe(format_df_numbers(weekday_active_probability), width='stretch')
+    st.dataframe(format_df_numbers(weekday_active_probability), use_container_width=True)
 with sim_tabs[1]:
-    st.dataframe(format_df_numbers(weekend_active_probability), width='stretch')
+    st.dataframe(format_df_numbers(weekend_active_probability), use_container_width=True)
 with sim_tabs[2]:
-    st.dataframe(format_df_numbers(weekday_load_fraction), width='stretch')
+    st.dataframe(format_df_numbers(weekday_load_fraction), use_container_width=True)
 with sim_tabs[3]:
-    st.dataframe(format_df_numbers(weekend_load_fraction), width='stretch')
+    st.dataframe(format_df_numbers(weekend_load_fraction), use_container_width=True)
 with sim_tabs[4]:
-    st.dataframe(format_df_numbers(weekday_avg_kw), width='stretch')
+    st.dataframe(format_df_numbers(weekday_avg_kw), use_container_width=True)
 with sim_tabs[5]:
-    st.dataframe(format_df_numbers(weekend_avg_kw), width='stretch')
+    st.dataframe(format_df_numbers(weekend_avg_kw), use_container_width=True)
 with sim_tabs[6]:
-    st.dataframe(format_df_numbers(weekday_vampire_probability), width='stretch')
+    st.dataframe(format_df_numbers(weekday_vampire_probability), use_container_width=True)
 with sim_tabs[7]:
-    st.dataframe(format_df_numbers(weekend_vampire_probability), width='stretch')
+    st.dataframe(format_df_numbers(weekend_vampire_probability), use_container_width=True)
 
 # -----------------------------
-# Downloads
+# Processed Data and Downloads
 # -----------------------------
 st.markdown("---")
 st.subheader("7) Download Tables")
+
+processed_cols = [
+    ts_col,
+    "Channel",
+    "Channel_Clean",
+    "End_Use_Category",
+    "kW",
+    "Interval_Minutes",
+    "Energy_Factor_h",
+    "Interval_kWh",
+    "Standby_Threshold_kW",
+    "Active_Threshold_kW",
+    "State",
+    "Off_Flag",
+    "Vampire_Flag",
+    "Active_Flag",
+    "Off_Minutes",
+    "Vampire_Minutes",
+    "Active_Minutes",
+    "Off_kWh",
+    "Vampire_kWh",
+    "Active_kWh",
+    "Load_Fraction",
+    "Date",
+    "Hour",
+    "DayType",
+]
+
+# with st.expander("Show processed long-format table"):
+#     st.dataframe(format_df_numbers(long_df[processed_cols]), use_container_width=True)
 
 apartment_slug = apartment_name.replace(" ", "_").replace("/", "_")
 
 export_files = {
     f"{apartment_slug}_equipment_summary.csv": equipment_summary,
     f"{apartment_slug}_category_summary.csv": category_summary,
+    # f"{apartment_slug}_processed_operation_table.csv": long_df[processed_cols],
     f"{apartment_slug}_weekday_active_probability.csv": weekday_active_probability,
     f"{apartment_slug}_weekend_active_probability.csv": weekend_active_probability,
     f"{apartment_slug}_weekday_load_fraction.csv": weekday_load_fraction,
@@ -800,9 +831,9 @@ zipped_exports = create_zip_download(export_files)
 c1, c2, c3 = st.columns(3)
 with c1:
     st.download_button(
-        "Download simulation tables ZIP",
+        "Download all simulation tables ZIP",
         data=zipped_exports,
-        file_name=f"{apartment_slug}_simulation_exports.zip",
+        file_name=f"{apartment_slug}_vampire_load_and_simulation_exports.zip",
         mime="application/zip",
     )
 with c2:
@@ -814,16 +845,11 @@ with c2:
     )
 with c3:
     st.download_button(
-        "Download category summary CSV",
-        data=to_csv_bytes(category_summary, index=False),
-        file_name=f"{apartment_slug}_category_summary.csv",
+        "Download processed operation table CSV",
+        data=to_csv_bytes(long_df[processed_cols], index=False),
+        file_name=f"{apartment_slug}_processed_operation_table.csv",
         mime="text/csv",
     )
-
-st.info(
-    "The full processed interval-level table has been intentionally removed from display and download to avoid large Streamlit websocket payloads. "
-    "The available exports are simulation-ready schedules and KPI summaries only."
-)
 
 st.markdown("---")
 st.subheader("Interpretation Notes")
