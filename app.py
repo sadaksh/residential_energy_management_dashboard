@@ -806,15 +806,35 @@ processed_cols = [
     "DayType",
 ]
 
-with st.expander("Show processed long-format table"):
-    st.dataframe(format_df_numbers(long_df[processed_cols]), width='stretch')
+st.caption(
+    "To avoid Streamlit websocket size errors, the full processed interval-level table is not rendered in the browser by default. "
+    "Use the preview below for checking and the optional download control for full export."
+)
+
+preview_rows = st.number_input(
+    "Rows to preview from processed table",
+    min_value=100,
+    max_value=10000,
+    value=1000,
+    step=100,
+)
+
+preview_channel_options = ["All channels"] + all_channels_clean
+preview_channel = st.selectbox("Preview channel filter", options=preview_channel_options)
+
+preview_df = long_df[processed_cols]
+if preview_channel != "All channels":
+    preview_df = preview_df[preview_df["Channel_Clean"] == preview_channel]
+
+with st.expander("Show processed long-format table preview"):
+    st.dataframe(format_df_numbers(preview_df.head(int(preview_rows))), width='stretch')
+    st.caption(f"Showing {min(len(preview_df), int(preview_rows)):,} of {len(preview_df):,} processed rows. Full table is available only through the optional download below.")
 
 apartment_slug = apartment_name.replace(" ", "_").replace("/", "_")
 
 export_files = {
     f"{apartment_slug}_equipment_summary.csv": equipment_summary,
     f"{apartment_slug}_category_summary.csv": category_summary,
-    f"{apartment_slug}_processed_operation_table.csv": long_df[processed_cols],
     f"{apartment_slug}_weekday_active_probability.csv": weekday_active_probability,
     f"{apartment_slug}_weekend_active_probability.csv": weekend_active_probability,
     f"{apartment_slug}_weekday_load_fraction.csv": weekday_load_fraction,
@@ -828,12 +848,12 @@ export_files = {
 
 zipped_exports = create_zip_download(export_files)
 
-c1, c2, c3 = st.columns(3)
+c1, c2 = st.columns(2)
 with c1:
     st.download_button(
-        "Download all simulation tables ZIP",
+        "Download simulation tables ZIP",
         data=zipped_exports,
-        file_name=f"{apartment_slug}_vampire_load_and_simulation_exports.zip",
+        file_name=f"{apartment_slug}_simulation_exports.zip",
         mime="application/zip",
     )
 with c2:
@@ -843,9 +863,17 @@ with c2:
         file_name=f"{apartment_slug}_equipment_summary.csv",
         mime="text/csv",
     )
-with c3:
+
+st.markdown("#### Optional Large Export")
+st.warning(
+    "The full processed operation table can be very large because it contains one row per timestamp per channel. "
+    "Enable this only when needed. If the generated CSV is too large for Streamlit Cloud, export apartment-wise or reduce the input period."
+)
+
+include_full_processed_download = st.checkbox("Enable full processed operation table download", value=False)
+if include_full_processed_download:
     st.download_button(
-        "Download processed operation table CSV",
+        "Download full processed operation table CSV",
         data=to_csv_bytes(long_df[processed_cols], index=False),
         file_name=f"{apartment_slug}_processed_operation_table.csv",
         mime="text/csv",
