@@ -774,61 +774,10 @@ with sim_tabs[7]:
     st.dataframe(format_df_numbers(weekend_vampire_probability), width='stretch')
 
 # -----------------------------
-# Processed Data and Downloads
+# Downloads
 # -----------------------------
 st.markdown("---")
 st.subheader("7) Download Tables")
-
-processed_cols = [
-    ts_col,
-    "Channel",
-    "Channel_Clean",
-    "End_Use_Category",
-    "kW",
-    "Interval_Minutes",
-    "Energy_Factor_h",
-    "Interval_kWh",
-    "Standby_Threshold_kW",
-    "Active_Threshold_kW",
-    "State",
-    "Off_Flag",
-    "Vampire_Flag",
-    "Active_Flag",
-    "Off_Minutes",
-    "Vampire_Minutes",
-    "Active_Minutes",
-    "Off_kWh",
-    "Vampire_kWh",
-    "Active_kWh",
-    "Load_Fraction",
-    "Date",
-    "Hour",
-    "DayType",
-]
-
-st.caption(
-    "To avoid Streamlit websocket size errors, the full processed interval-level table is not rendered in the browser by default. "
-    "Use the preview below for checking and the optional download control for full export."
-)
-
-preview_rows = st.number_input(
-    "Rows to preview from processed table",
-    min_value=100,
-    max_value=10000,
-    value=1000,
-    step=100,
-)
-
-preview_channel_options = ["All channels"] + all_channels_clean
-preview_channel = st.selectbox("Preview channel filter", options=preview_channel_options)
-
-preview_df = long_df[processed_cols]
-if preview_channel != "All channels":
-    preview_df = preview_df[preview_df["Channel_Clean"] == preview_channel]
-
-with st.expander("Show processed long-format table preview"):
-    st.dataframe(format_df_numbers(preview_df.head(int(preview_rows))), width='stretch')
-    st.caption(f"Showing {min(len(preview_df), int(preview_rows)):,} of {len(preview_df):,} processed rows. Full table is available only through the optional download below.")
 
 apartment_slug = apartment_name.replace(" ", "_").replace("/", "_")
 
@@ -848,7 +797,7 @@ export_files = {
 
 zipped_exports = create_zip_download(export_files)
 
-c1, c2 = st.columns(2)
+c1, c2, c3 = st.columns(3)
 with c1:
     st.download_button(
         "Download simulation tables ZIP",
@@ -863,21 +812,18 @@ with c2:
         file_name=f"{apartment_slug}_equipment_summary.csv",
         mime="text/csv",
     )
-
-st.markdown("#### Optional Large Export")
-st.warning(
-    "The full processed operation table can be very large because it contains one row per timestamp per channel. "
-    "Enable this only when needed. If the generated CSV is too large for Streamlit Cloud, export apartment-wise or reduce the input period."
-)
-
-include_full_processed_download = st.checkbox("Enable full processed operation table download", value=False)
-if include_full_processed_download:
+with c3:
     st.download_button(
-        "Download full processed operation table CSV",
-        data=to_csv_bytes(long_df[processed_cols], index=False),
-        file_name=f"{apartment_slug}_processed_operation_table.csv",
+        "Download category summary CSV",
+        data=to_csv_bytes(category_summary, index=False),
+        file_name=f"{apartment_slug}_category_summary.csv",
         mime="text/csv",
     )
+
+st.info(
+    "The full processed interval-level table has been intentionally removed from display and download to avoid large Streamlit websocket payloads. "
+    "The available exports are simulation-ready schedules and KPI summaries only."
+)
 
 st.markdown("---")
 st.subheader("Interpretation Notes")
