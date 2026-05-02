@@ -618,7 +618,7 @@ threshold_df = pd.DataFrame({
     "Standby Threshold (kW)": [standby_threshold_map[ch] for ch in active_threshold_map.keys()],
     "Active Threshold (kW)": [active_threshold_map[ch] for ch in active_threshold_map.keys()],
 })
-st.dataframe(format_df_numbers(threshold_df), use_container_width=True, hide_index=True)
+st.dataframe(format_df_numbers(threshold_df), width='stretch', hide_index=True)
 
 # -----------------------------
 # Vampire Load Summary
@@ -629,7 +629,7 @@ st.subheader("3) Vampire Load KPI Tables")
 t1, t2 = st.tabs(["Equipment Summary", "End-Use Category Summary"])
 
 with t1:
-    st.dataframe(format_df_numbers(equipment_summary), use_container_width=True, hide_index=True)
+    st.dataframe(format_df_numbers(equipment_summary), width='stretch', hide_index=True)
 
     if not equipment_summary.empty:
         fig_top_vampire = px.bar(
@@ -640,10 +640,10 @@ with t1:
             title="Top Vampire-Load Channels: kWh/day",
             labels={"Channel_Clean": "Channel", "Vampire_kWh_per_Day": "Vampire kWh/day"},
         )
-        st.plotly_chart(fig_top_vampire, use_container_width=True)
+        st.plotly_chart(fig_top_vampire, width='stretch')
 
 with t2:
-    st.dataframe(format_df_numbers(category_summary), use_container_width=True, hide_index=True)
+    st.dataframe(format_df_numbers(category_summary), width='stretch', hide_index=True)
 
     if not category_summary.empty:
         fig_category = px.bar(
@@ -654,7 +654,7 @@ with t2:
             title="Vampire Load by End-Use Category",
             labels={"End_Use_Category": "End-Use Category", "Vampire_kWh_per_Day": "Vampire kWh/day"},
         )
-        st.plotly_chart(fig_category, use_container_width=True)
+        st.plotly_chart(fig_category, width='stretch')
 
 # Hourly vampire profile
 hourly_vampire = (
@@ -688,7 +688,7 @@ fig_hourly_vampire = px.line(
     title="Hourly Vampire / Standby Load Profile",
     labels={"Hour": "Hour of Day", "Average_Vampire_kW": "Average Vampire kW"},
 )
-st.plotly_chart(fig_hourly_vampire, use_container_width=True)
+st.plotly_chart(fig_hourly_vampire, width='stretch')
 
 # -----------------------------
 # Operation Schedules
@@ -708,7 +708,7 @@ with c1:
         zmax=zmax,
         title=f"Weekday Schedule - {schedule_metric}",
     )
-    st.plotly_chart(fig_weekday, use_container_width=True)
+    st.plotly_chart(fig_weekday, width='stretch')
 
 with c2:
     fig_weekend = px.imshow(
@@ -720,7 +720,7 @@ with c2:
         zmax=zmax,
         title=f"Weekend Schedule - {schedule_metric}",
     )
-    st.plotly_chart(fig_weekend, use_container_width=True)
+    st.plotly_chart(fig_weekend, width='stretch')
 
 st.subheader("5) Daily Operation Schedule")
 st.caption("Daily schedule is shown for the selected channel.")
@@ -733,7 +733,7 @@ fig_daily = px.imshow(
     zmax=zmax,
     title=f"Daily Schedule - {selected_channel_clean} - {schedule_metric}",
 )
-st.plotly_chart(fig_daily, use_container_width=True)
+st.plotly_chart(fig_daily, width='stretch')
 
 # -----------------------------
 # Simulation Export Tables
@@ -757,21 +757,21 @@ sim_tabs = st.tabs([
 ])
 
 with sim_tabs[0]:
-    st.dataframe(format_df_numbers(weekday_active_probability), use_container_width=True)
+    st.dataframe(format_df_numbers(weekday_active_probability), width='stretch')
 with sim_tabs[1]:
-    st.dataframe(format_df_numbers(weekend_active_probability), use_container_width=True)
+    st.dataframe(format_df_numbers(weekend_active_probability), width='stretch')
 with sim_tabs[2]:
-    st.dataframe(format_df_numbers(weekday_load_fraction), use_container_width=True)
+    st.dataframe(format_df_numbers(weekday_load_fraction), width='stretch')
 with sim_tabs[3]:
-    st.dataframe(format_df_numbers(weekend_load_fraction), use_container_width=True)
+    st.dataframe(format_df_numbers(weekend_load_fraction), width='stretch')
 with sim_tabs[4]:
-    st.dataframe(format_df_numbers(weekday_avg_kw), use_container_width=True)
+    st.dataframe(format_df_numbers(weekday_avg_kw), width='stretch')
 with sim_tabs[5]:
-    st.dataframe(format_df_numbers(weekend_avg_kw), use_container_width=True)
+    st.dataframe(format_df_numbers(weekend_avg_kw), width='stretch')
 with sim_tabs[6]:
-    st.dataframe(format_df_numbers(weekday_vampire_probability), use_container_width=True)
+    st.dataframe(format_df_numbers(weekday_vampire_probability), width='stretch')
 with sim_tabs[7]:
-    st.dataframe(format_df_numbers(weekend_vampire_probability), use_container_width=True)
+    st.dataframe(format_df_numbers(weekend_vampire_probability), width='stretch')
 
 # -----------------------------
 # Processed Data and Downloads
@@ -807,7 +807,7 @@ processed_cols = [
 ]
 
 with st.expander("Show processed long-format table"):
-    st.dataframe(format_df_numbers(long_df[processed_cols]), use_container_width=True)
+    st.dataframe(format_df_numbers(long_df[processed_cols]), width='stretch')
 
 apartment_slug = apartment_name.replace(" ", "_").replace("/", "_")
 
